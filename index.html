@@ -1,0 +1,317 @@
+<!doctype html>
+<html>
+<head>
+<style>
+body{
+    background: #202028;
+    padding: 0px;
+}
+
+#canvas_dom{
+    position: absolute;
+    top: 0;
+    left: 0;
+}
+
+
+
+</style>
+<meta charset=utf-8>
+<title>Mine Sweeper '45</title>
+<script>
+
+    const utils = {
+        rand: (min, max) => {
+            return (Math.random() * (max - min)) + min
+        },
+
+        degreesToCoords: (x, y, angle, distance) => {
+            return new Vector(
+                Math.round(Math.cos(angle * Math.PI / 180) * distance + x),
+                Math.round(Math.sin(angle * Math.PI / 180) * distance + y)
+            )
+        }
+    }
+
+    function Vector(x,y) {
+        this.x = x
+        this.y = y
+
+        this.add = (vector) => {
+            return new Vector(this.x + vector.x, this.y + vector.y)
+        }
+
+        this.subtract = (vector) => {
+            return new Vector(this.x - vector.x, this.y - vector.y)
+        }
+
+        this.multiply = (scalar) => {
+            return new Vector(this.x * scalar, this.y * scalar)
+        }
+
+        this.divide = (vector) => {
+            return new Vector(this.x / vector.x, this.y / vector.y)
+        }
+
+        this.dotProduct = (vector) => {
+            return this.x * vector.x + this.y * vector.y
+        }
+
+        this.setMagnitude = (newMagnitude) => {
+            const mag = this.magnitude()
+            return new Vector(
+                this.x * newMagnitude / mag,
+                this.y * newMagnitude / mag,
+            )
+        }
+
+        // distance new_vx = vx * New_Mag / Mag
+        this.magnitude = () => {
+            return Math.sqrt(this.x ** 2 + this.y ** 2);
+        }
+
+        this.direction = () => {
+            return Math.atan2(this.x, this.y);
+        }
+    }
+
+    function Tile() {
+        console.log('spawning')
+        this.id = Math.round(utils.rand(0, 10000000000))
+        this.size = 30 // Math.round(utils.rand(10, 40))
+        this.sphereArea = 4 * Math.PI * this.size ** 2
+        this.velocity = new Vector(utils.rand(-1, 1), utils.rand(-1, 1))
+        this.collisions = []
+
+        // this.position = new Vector(
+        //     utils.rand(this.size / 2, game.canvas.width),
+        //     utils.rand(this.size / 2, game.canvas.height)
+        // )
+        
+        this.position = utils.degreesToCoords(
+            game.position.x,
+            game.position.y,
+            Math.round(utils.rand(0, 360)), // random angle
+            Math.round(utils.rand(0, game.size - this.size)) // random distance
+        )
+        
+        this.render = () => {
+            game.ctx.beginPath()
+            game.ctx.fillStyle = "#4a4951"
+            game.ctx.arc(this.position.x, this.position.y, this.size, 0, 2 * Math.PI )
+            game.ctx.fill()
+            game.ctx.stroke()
+        }
+
+        this.tick = () => {
+
+            // for all other tiles
+            game.tiles.forEach((that) => {
+                // if self or if has already been processed
+                if(that == this) return
+                if(this.collisions.includes(that.id)) return
+
+                const relPos = this.position.subtract(that.position)
+
+                if(relPos.magnitude() <= this.size + that.size){
+                    // update velocities for both tiles
+                    let old = [this.velocity.x, this.velocity.y]
+                    let this_velocity = this.collisionVector(this, that)
+                    let that_velocity = this.collisionVector(that, this)
+
+                    this.velocity = this_velocity
+                    that.velocity = that_velocity
+
+                    // stop intersections - set magnitude to distance plus 1
+                    // lets sadd the overlap as a velocity
+                    const bufferVector = relPos.setMagnitude(this.size + that.size - relPos.magnitude())
+                    this.position = this.position.add(bufferVector)
+                    // add a slight reppelant to overlaps
+                    this.velocity = this.velocity.add(bufferVector.setMagnitude(0.1))
+
+                    // add to other tile collisions so it won't be re-processed
+                    that.collisions.push(this.id)
+                }
+            })
+
+            // check circle boundary
+            if(this.position.subtract(game.position).magnitude() > game.size - this.size){
+                this.velocity = this.collisionVector(this, game)
+                // repell from game edge
+                const relPost = this.position.subtract(game.position)
+                const bufferVector = relPost.setMagnitude(relPost.magnitude() - game.size)
+                this.postition = this.position.subtract(bufferVector)
+                this.velocity = this.velocity.add(bufferVector.setMagnitude(0.2))
+            }
+
+            // add resistance 1.01 for uniform speeds
+            this.velocity = this.velocity.setMagnitude(this.velocity.magnitude() / 1.04)
+
+            // move
+            this.position = this.position.add(this.velocity)
+
+            // clear collisions once it's processed
+            this.collisions = []
+
+            this.render()
+        }
+
+        this.collisionVector = (particle1, particle2) => {
+            return particle1.velocity
+            .subtract(particle1.position
+                .subtract(particle2.position)
+                .multiply(
+                    particle1.velocity.subtract(particle2.velocity)
+                    .dotProduct(particle1.position.subtract(particle2.position))
+                / particle1.position.subtract(particle2.position).magnitude() ** 2
+                )
+
+                // add mass to the system
+                .multiply((2 * particle2.sphereArea) / (particle1.sphereArea + particle2.sphereArea))
+            )
+        }
+    }
+
+    function Camera() {
+        this.position = {x: 0, y: 0}
+        this.velocity = {x: 0, y: 0}
+    }
+
+    function Game(){
+        this.frame = 0
+        this.mousedown = false
+        this.mouse = false
+        this.started = true
+        this.paused = false
+        this.size = 450
+        this.velocity = new Vector(0,0)
+        this.sphereArea = 4 * Math.PI * this.size ** 2
+        this.camera = new Camera()
+        this.tiles = []
+        this.tileCount = 70
+        this.numConnections = 6
+
+        this.fps = {
+            lastFrame: performance.now(),
+            recentCount: new Array(30),
+            add: () => {
+                let fpsDelta = (performance.now() - this.fps.lastFrame) / 1000
+                this.fps.lastFrame = performance.now()
+
+                this.fps.recentCount.shift()
+                this.fps.recentCount.push(Math.round(1/fpsDelta))
+            },
+            print: () => {
+                let average = Math.round(this.fps.recentCount.reduce((a, b) => a + b, 0) / this.fps.recentCount.length)
+                this.ctx.font = "15px Arial"
+                this.ctx.fillText('FPS: '+average, this.canvas.width - 80, 15);
+            }
+        }
+
+        this.init = () => {
+            let requestAnimationFrame = window.requestAnimationFrame ||
+                                        window.mozRequestAnimationFrame ||
+                                        window.webkitRequestAnimationFrame ||
+                                        window.msRequestAnimationFrame
+            window.requestAnimationFrame = requestAnimationFrame
+            
+            this.canvas = document.getElementById('canvas_dom')
+            this.ctx = game.canvas.getContext('2d')
+            this.canvas.width  = window.innerWidth
+            this.canvas.height = window.innerHeight
+            this.position = new Vector(
+                window.innerWidth / 2,
+                window.innerHeight / 2
+            )
+
+            this.events.init()
+
+            // spawn tiles
+            for(i=0; i<this.tileCount; i++){
+                this.tiles.push(new Tile())
+            }
+
+            this.tiles.push(
+                new Tile(new Vector(100,300), new Vector(4,0), 'a')
+            )
+
+            this.tiles.push(
+                new Tile(new Vector(600,800), new Vector(0,-4), 'b')
+            )
+
+            // start the game
+            game.tick()
+        }
+
+        this.tick = () => {
+            this.frame++
+            this.fps.add()
+
+            // render
+            this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+            this.renderGrid()
+
+            this.tiles.forEach((tile) => {
+                tile.tick()
+            })
+            this.fps.print()
+
+            if(this.paused) return
+
+            requestAnimationFrame(function () {
+                game.tick()
+            });
+        }
+
+        this.renderGrid = () => {
+            // render circle
+            game.ctx.beginPath()
+            game.ctx.strokeStyle = "#000"
+            game.ctx.arc(
+                game.canvas.width / 2,
+                game.canvas.height / 2,
+                game.size,
+                0, 2 * Math.PI
+            )
+            game.ctx.stroke()
+        }
+
+        this.events = {
+            init: () => {
+                this.canvas.onmousedown = this.events.mousedown
+                //this.canvas.onmousemove = this.events.mousemove
+                this.canvas.onclick     = this.events.click
+            },
+            click: (e) => {
+                if(e.clientX < 50 && e.clientY < 50){
+                    this.paused = !this.paused
+                    this.tick()
+                }
+            },
+            mousedown: (e) => {
+            },
+            mousemove: (e) => {
+                const mPos = {x: e.clientX, y: e.clientY}
+                // is it in the circle
+                if(utils.distance(mPos, this.position) < this.radius){
+                    return this.mouse = mPos
+                }
+                this.mouse = false
+            }
+        }
+    }
+
+    let init = () => {
+        game = new Game()
+        game.init()
+    }
+
+</script>
+<body onload="init()">
+  <div class='flex'>
+    <div class='panel' id="game">
+       <canvas id="canvas_dom"></canvas>
+    </div>
+  </div>
+</body>
+</html>
