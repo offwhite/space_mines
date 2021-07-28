@@ -17,7 +17,7 @@ body{
 
 </style>
 <meta charset=utf-8>
-<title>Mine Sweeper '45</title>
+<title>SPACE MINES</title>
 <script>
 
     const utils = {
@@ -76,18 +76,18 @@ body{
     }
 
     function Tile() {
-        console.log('spawning')
         this.id = Math.round(utils.rand(0, 10000000000))
-        this.size = 30 // Math.round(utils.rand(10, 40))
+        this.size = 20 // Math.round(utils.rand(10, 40))
         this.sphereArea = 4 * Math.PI * this.size ** 2
         this.velocity = new Vector(utils.rand(-1, 1), utils.rand(-1, 1))
         this.collisions = []
+        this.neighbors = []
+        this.counter = 0
+        this.hovering = false
+        this.hasMine = false
+        this.cleared = false
+        this.flagged = false
 
-        // this.position = new Vector(
-        //     utils.rand(this.size / 2, game.canvas.width),
-        //     utils.rand(this.size / 2, game.canvas.height)
-        // )
-        
         this.position = utils.degreesToCoords(
             game.position.x,
             game.position.y,
@@ -95,12 +95,78 @@ body{
             Math.round(utils.rand(0, game.size - this.size)) // random distance
         )
         
+        this.connections = () => {
+            this.neighbors = []
+            this.counter = 0
+            game.tiles.forEach((that) => {
+                if(that == this) return
+                const relPos = this.position.subtract(that.position)
+
+                if(relPos.magnitude() <= 120 ){
+                    let highlightConnection = false
+                    if(relPos.magnitude() < 80 ){
+                        this.neighbors.push(that)
+                        if(that.hasMine) this.counter++
+                        if(this.hovering || that.hovering) highlightConnection = true
+                    }
+                    if(game.connectionsRendered.includes(that)) return 
+                    game.ctx.beginPath()
+                    const opacity = 1 - ((relPos.magnitude() - 30) / 120) // 100% at 30px... 0% at 80px
+                    game.ctx.strokeStyle = highlightConnection ? 'rgba(255,255,255,1)' : 'rgba(100,100,100,'+opacity+')'
+                    game.ctx.moveTo(this.position.x, this.position.y)
+                    game.ctx.lineTo(that.position.x, that.position.y)
+                    game.ctx.stroke()
+                }
+            })
+        }
+
+        this.clearTile = () => {
+            if(this.cleared) return
+            this.cleared = true
+
+            // clear neighbors too. if this isn't a numbered tile
+            if(this.counter > 0) return
+            this.neighbors.forEach((that) => {
+                that.clearTile()
+            })
+        }
+
         this.render = () => {
             game.ctx.beginPath()
-            game.ctx.fillStyle = "#4a4951"
-            game.ctx.arc(this.position.x, this.position.y, this.size, 0, 2 * Math.PI )
+            game.ctx.strokeStyle = 'rgba(0,0,0,0.8)'
+            if(this.cleared){
+                game.ctx.fillStyle = "#8b8b8b"
+            }else if(this.flagged){
+                game.ctx.fillStyle = "#844141"
+            }else if(this.hovering){
+                game.ctx.fillStyle =  "#646176"
+            }else if(game.dead && this.hasMine){
+                game.ctx.fillStyle =  "red"
+            }else{
+                game.ctx.fillStyle = "#4a4951"
+            }
+            game.ctx.arc(this.position.x, this.position.y, this.size - 1, 0, 2 * Math.PI )
             game.ctx.fill()
             game.ctx.stroke()
+
+            if(this.counter < 1 || !this.cleared) return
+
+            game.ctx.font = "15px Arial"
+            game.ctx.fillStyle = "#333333"
+            game.ctx.fillText(this.counter, this.position.x - 5, this.position.y + 5)
+        }
+
+        this.highlight = () => {
+            this.hovering = true
+        }
+
+        this.click = () => {
+            if(this.hasMine) return game.death()
+            this.clearTile()
+        }
+
+        this.flag = () => {
+            this.flagged = !this.flagged
         }
 
         this.tick = () => {
@@ -115,7 +181,6 @@ body{
 
                 if(relPos.magnitude() <= this.size + that.size){
                     // update velocities for both tiles
-                    let old = [this.velocity.x, this.velocity.y]
                     let this_velocity = this.collisionVector(this, that)
                     let that_velocity = this.collisionVector(that, this)
 
@@ -126,11 +191,26 @@ body{
                     // lets sadd the overlap as a velocity
                     const bufferVector = relPos.setMagnitude(this.size + that.size - relPos.magnitude())
                     this.position = this.position.add(bufferVector)
-                    // add a slight reppelant to overlaps
+                    // add a slight repelant to overlaps
                     this.velocity = this.velocity.add(bufferVector.setMagnitude(0.1))
 
                     // add to other tile collisions so it won't be re-processed
                     that.collisions.push(this.id)
+                }
+            })
+
+            // check barge collisions
+            game.barges.forEach((barge) => {
+
+                const relPos = this.position.subtract(barge.position)
+                if(relPos.magnitude() <= this.size + barge.size){
+                    let this_velocity = this.collisionVector(this, barge)
+                    this.velocity = this_velocity
+
+                    const bufferVector = relPos.setMagnitude(this.size + barge.size - relPos.magnitude())
+                    this.position = this.position.add(bufferVector)
+                    // add a slight repelant to overlaps
+                    this.velocity = this.velocity.add(bufferVector.setMagnitude(0.1))
                 }
             })
 
@@ -172,12 +252,54 @@ body{
         }
     }
 
-    function Camera() {
-        this.position = {x: 0, y: 0}
-        this.velocity = {x: 0, y: 0}
+    function Barge() {
+        this.size = utils.rand(5, 20)
+        this.sphereArea = 4 * Math.PI * this.size ** 2
+        this.position = utils.degreesToCoords(
+            game.position.x,
+            game.position.y,
+            Math.round(utils.rand(0, 360)), // random angle
+            game.size + this.size
+        )
+        let randPointOnBoard = utils.degreesToCoords(
+            game.position.x,
+            game.position.y,
+            Math.round(utils.rand(0, 360)), // random angle
+            Math.round(utils.rand(0, game.size - this.size)) // random distance
+        )
+        this.velocity = this.position.subtract(randPointOnBoard).setMagnitude(-1)
+
+        this.tick = () => {
+            // move
+            this.position = this.position.add(this.velocity)
+            
+            // delete if it's offscreen
+            if(
+                this.position.x > game.canvas.width + this.size ||
+                this.position.x < -this.size ||
+                this.position.y > game.canvas.height + this.size ||
+                this.position.y < - this.size
+            ) this.delete()
+
+            this.render()
+        }
+
+        this.render = () => {
+            game.ctx.beginPath()
+            game.ctx.strokeStyle = 'rgba(0,0,0,0.8)'
+            game.ctx.fillStyle = 'rgba(0,0,0,0.8)'
+            game.ctx.arc(this.position.x, this.position.y, this.size - 1, 0, 2 * Math.PI )
+            game.ctx.fill()
+            game.ctx.stroke()
+        }
+
+        this.delete = () => {
+            game.barges.splice(game.barges.indexOf(this), 1)
+        }
     }
 
     function Game(){
+        this.bargesSpawnEveryNFrames = 1500
         this.frame = 0
         this.mousedown = false
         this.mouse = false
@@ -186,10 +308,11 @@ body{
         this.size = 450
         this.velocity = new Vector(0,0)
         this.sphereArea = 4 * Math.PI * this.size ** 2
-        this.camera = new Camera()
         this.tiles = []
-        this.tileCount = 70
+        this.tileCount = 150
+        this.mineCount = 20
         this.numConnections = 6
+        this.barges = []
 
         this.fps = {
             lastFrame: performance.now(),
@@ -204,7 +327,11 @@ body{
             print: () => {
                 let average = Math.round(this.fps.recentCount.reduce((a, b) => a + b, 0) / this.fps.recentCount.length)
                 this.ctx.font = "15px Arial"
-                this.ctx.fillText('FPS: '+average, this.canvas.width - 80, 15);
+                if(this.paused){
+                    this.ctx.fillText('PAUSED', this.canvas.width - 80, 15)
+                    return
+                }
+                this.ctx.fillText('FPS: '+average, this.canvas.width - 80, 15)
             }
         }
 
@@ -231,13 +358,14 @@ body{
                 this.tiles.push(new Tile())
             }
 
-            this.tiles.push(
-                new Tile(new Vector(100,300), new Vector(4,0), 'a')
-            )
-
-            this.tiles.push(
-                new Tile(new Vector(600,800), new Vector(0,-4), 'b')
-            )
+            // spawn mines
+            for(i=0; i<this.mineCount; i++){
+                let randIndex = Math.round(utils.rand(0, this.tileCount - 1))
+                while(this.tiles[randIndex].hasMine){
+                    randIndex =  Math.round(utils.rand(0, this.mineCount - 1))
+                }
+                this.tiles[randIndex].hasMine = true
+            }
 
             // start the game
             game.tick()
@@ -251,16 +379,36 @@ body{
             this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
             this.renderGrid()
 
+            this.connectionsRendered = []
+            this.tiles.forEach((tile) => {
+                tile.connections()
+                this.connectionsRendered.push(tile)
+            })
+
             this.tiles.forEach((tile) => {
                 tile.tick()
             })
+
+            this.barges.forEach((barge) => {
+                barge.tick()
+            })
+
+            if(this.frame % this.bargesSpawnEveryNFrames == 0){
+                this.barges.push(new Barge())
+            }
+
+
+            // close loop
             this.fps.print()
-
             if(this.paused) return
-
             requestAnimationFrame(function () {
                 game.tick()
             });
+        }
+
+        this.death = () => {
+            this.paused = true
+            this.dead = true
         }
 
         this.renderGrid = () => {
@@ -279,24 +427,46 @@ body{
         this.events = {
             init: () => {
                 this.canvas.onmousedown = this.events.mousedown
-                //this.canvas.onmousemove = this.events.mousemove
+                this.canvas.onmousemove = this.events.mousemove
+                this.canvas.addEventListener('contextmenu', this.events.click)
                 this.canvas.onclick     = this.events.click
             },
             click: (e) => {
+                event.preventDefault()
                 if(e.clientX < 50 && e.clientY < 50){
                     this.paused = !this.paused
                     this.tick()
+                    return
                 }
+                const mouse = new Vector(e.clientX, e.clientY)
+
+                this.tiles.forEach((tile) => {
+                    if(tile.position.subtract(mouse).magnitude() < tile.size){
+                        if(event.button > 0) return tile.flag()
+                        tile.click()
+                    }
+                })
             },
             mousedown: (e) => {
             },
             mousemove: (e) => {
-                const mPos = {x: e.clientX, y: e.clientY}
-                // is it in the circle
-                if(utils.distance(mPos, this.position) < this.radius){
-                    return this.mouse = mPos
-                }
-                this.mouse = false
+                const mouse = new Vector(e.clientX, e.clientY)
+
+                // see if the mouse is in the game field
+                if(this.position.subtract(mouse).magnitude() > game.size) return
+
+                let found = false
+                
+                // see if this is in a tile
+                this.tiles.forEach((tile) => {
+                    tile.hovering = false
+                    if(tile.position.subtract(mouse).magnitude() < tile.size){
+                        found = true
+                        tile.highlight()
+                    }
+                })
+
+                game.canvas.style.cursor = found ? 'pointer' : 'default'
             }
         }
     }
